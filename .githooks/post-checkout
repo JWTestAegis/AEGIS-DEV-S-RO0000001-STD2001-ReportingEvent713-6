@@ -1,0 +1,65 @@
+#!/bin/sh
+
+# =======================================================
+# post-checkout フック
+# git checkout 実行後に自動的に実行されます
+# renv.lock ファイルの追跡設定をブランチに応じて制御します
+# =======================================================
+
+# $3 フラグの意味:
+#   1 = ローカルチェックアウト（ブランチ切り替え）
+#   0 = ファイルチェックアウト（通常のチェックアウト操作ではない）
+# ファイルチェックアウト時は何もしない
+if [ "$3" != "1" ]; then
+    exit 0
+fi
+
+# =======================================================
+# ブランチ名を取得してrenv.lock管理方針を決定
+# =======================================================
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+EXCLUDE_FILE=".git/info/exclude"
+TARGET_FILE="renv.lock"
+
+# 保護対象ブランチ（main/qa/dev では renv.lock を常に追跡）
+PROTECTED_BRANCHES="main qa dev"
+
+# =======================================================
+# ブランチが保護対象ブランチ（main/qa/dev）かどうかを判定
+# =======================================================
+is_protected_branch() {
+    for b in $PROTECTED_BRANCHES; do
+        if [ "$BRANCH" = "$b" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 保護対象ブランチの場合：renv.lock を exclude ファイルから削除して追跡を有効化
+if is_protected_branch; then
+    # .git/info/exclude ファイルが存在する場合のみ、renv.lock を削除
+    if [ -f "$EXCLUDE_FILE" ]; then
+        sed -i "/^${TARGET_FILE}$/d" "$EXCLUDE_FILE"
+    fi
+    exit 0
+fi
+
+# 保護対象ブランチ以外の場合：renv.lock を exclude に追加して追跡を無効化
+if [ ! -f "$EXCLUDE_FILE" ] || ! grep -qx "$TARGET_FILE" "$EXCLUDE_FILE"; then
+    # ファイルが存在し、かつ最後が改行で終わっていない場合のみ、末尾に改行を追加
+    if [ -f "$EXCLUDE_FILE" ] && [ -s "$EXCLUDE_FILE" ]; then
+        if [ "$(tail -c 1 "$EXCLUDE_FILE" 2>/dev/null | wc -l)" -eq 0 ]; then
+            echo >> "$EXCLUDE_FILE"
+        fi
+    fi
+    echo "$TARGET_FILE" >> "$EXCLUDE_FILE"
+fi
+
+# git インデックスに renv.lock が存在する場合、追跡を削除（ローカルファイルは保持）
+if git ls-files --error-unmatch "$TARGET_FILE" >/dev/null 2>&1; then
+    # git rm と git commit が失敗してもスクリプトは継続（exit code 0で終了）
+    git rm --cached "$TARGET_FILE" 2>/dev/null || true
+    git commit -m "chore: untrack ${TARGET_FILE} on non-protected branch (auto)" --no-verify 2>/dev/null || true
+fi
